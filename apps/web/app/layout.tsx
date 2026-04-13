@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 import { JetBrains_Mono } from "next/font/google";
-import { Agentation } from "agentation";
 import "./globals.css";
 
 const mono = JetBrains_Mono({
@@ -29,7 +28,6 @@ export default function RootLayout({
     <html lang="en" className={`${mono.variable} h-full dark`}>
       <body className="min-h-full flex flex-col font-mono bg-[#080a0e] text-[#00ff41]">
         {children}
-        {process.env.NODE_ENV === "development" && <Agentation />}
       </body>
     </html>
   );
