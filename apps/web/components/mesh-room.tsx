@@ -9,7 +9,11 @@ interface Dot {
   content: string;
   author: string;
   type: string;
+  channel: string;
   createdAt: string;
+  timestamp?: string;
+  prev_hash?: string | null;
+  index?: number;
 }
 
 interface NodeHealth {
@@ -24,7 +28,8 @@ function truncateId(id: string, len = 12) {
   return id ? `${id.slice(0, len)}…` : "—";
 }
 
-function timestamp(iso: string) {
+function getTime(dot: Dot) {
+  const iso = dot.createdAt || dot.timestamp || "";
   try {
     return new Date(iso).toLocaleTimeString("en-US", {
       hour: "2-digit",
@@ -43,6 +48,7 @@ export function MeshRoom() {
   const [author, setAuthor] = useState("anon");
   const [connected, setConnected] = useState(false);
   const [sending, setSending] = useState(false);
+  const [isPublic, setIsPublic] = useState(true);
   const [bootLines, setBootLines] = useState<string[]>([]);
   const [booted, setBooted] = useState(false);
   const msgEndRef = useRef<HTMLDivElement>(null);
@@ -92,24 +98,26 @@ export function MeshRoom() {
     }
   }, []);
 
-  // Fetch existing dots
+  // Fetch existing dots — public channel only
   const fetchDots = useCallback(async () => {
     try {
-      const r = await fetch(`${API}/dots`);
+      const r = await fetch(`${API}/dots?channel=public`);
       const data = await r.json();
-      const fetched: Dot[] = (data.dots ?? [])
-        .filter((d: Dot) => d.type === "chat" && d.content?.trim())
-        .sort(
-          (a: Dot, b: Dot) =>
-            new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-        );
+      const raw: Dot[] = Array.isArray(data) ? data : data.dots ?? [];
+      const fetched = raw
+        .filter((d) => d.content?.trim())
+        .sort((a, b) => {
+          const ta = new Date(a.createdAt || a.timestamp || 0).getTime();
+          const tb = new Date(b.createdAt || b.timestamp || 0).getTime();
+          return ta - tb;
+        });
       setDots(fetched);
     } catch {
       // silent
     }
   }, []);
 
-  // SSE stream
+  // SSE stream — filter public channel client-side
   useEffect(() => {
     if (!booted) return;
     fetchHealth();
@@ -119,33 +127,23 @@ export function MeshRoom() {
     const es = new EventSource(`${API}/events`);
     es.onopen = () => setConnected(true);
     es.onerror = () => setConnected(false);
-    es.addEventListener("dot", (e) => {
+
+    const handleDot = (raw: string) => {
       try {
-        const dot: Dot = JSON.parse(e.data);
-        if (dot.type === "chat" && dot.content?.trim()) {
-          setDots((prev) => {
-            if (prev.find((d) => d.id === dot.id)) return prev;
-            return [...prev, dot];
-          });
-        }
-      } catch {
-        // ignore
-      }
-    });
-    // fallback: generic message
-    es.onmessage = (e) => {
-      try {
-        const dot: Dot = JSON.parse(e.data);
-        if (dot.type === "chat" && dot.content?.trim()) {
-          setDots((prev) => {
-            if (prev.find((d) => d.id === dot.id)) return prev;
-            return [...prev, dot];
-          });
-        }
+        const dot: Dot = JSON.parse(raw);
+        if (dot.channel !== "public" || !dot.content?.trim()) return;
+        setDots((prev) => {
+          if (prev.find((d) => d.id === dot.id)) return prev;
+          return [...prev, dot];
+        });
       } catch {
         // ignore
       }
     };
+
+    es.addEventListener("dot", (e) => handleDot(e.data));
+    es.onmessage = (e) => handleDot(e.data);
+
     return () => {
       es.close();
       clearInterval(healthInterval);
@@ -170,7 +168,7 @@ export function MeshRoom() {
           content: msg,
           type: "chat",
           author: author || "anon",
-          channel: "mesh",
+          channel: isPublic ? "public" : "internal",
         }),
       });
     } catch {
@@ -194,7 +192,10 @@ export function MeshRoom() {
         <div className="w-full max-w-xl">
           <div className="text-[#00ff41] text-xs font-mono space-y-1">
             {bootLines.map((line, i) => (
-              <div key={i} className="opacity-0 animate-[fadeIn_0.3s_ease_forwards]">
+              <div
+                key={i}
+                className="opacity-0 animate-[fadeIn_0.3s_ease_forwards]"
+              >
                 <span className="text-[#00ff41]/40">{">"}</span> {line}
               </div>
             ))}
@@ -243,13 +244,20 @@ export function MeshRoom() {
         {dots.map((dot) => (
           <div key={dot.id} className="flex gap-3 text-sm group">
             <span className="text-[#00ff41]/40 text-xs w-10 shrink-0 pt-0.5 text-right">
-              {timestamp(dot.createdAt)}
+              {getTime(dot)}
             </span>
-            <div>
+            <div className="flex-1 min-w-0">
               <span className="text-[#00ff41]/60 text-xs mr-2">
                 {dot.author ?? "anon"}
               </span>
-              <span className="text-[#00ff41]/90">{dot.content}</span>
+              <span className="text-[#00ff41]/90 break-words">
+                {dot.content}
+              </span>
+              {dot.prev_hash && (
+                <span className="text-[#00ff41]/20 text-[10px] ml-2 hidden group-hover:inline">
+                  ←{dot.prev_hash.slice(0, 8)}
+                </span>
+              )}
             </div>
           </div>
         ))}
@@ -264,10 +272,22 @@ export function MeshRoom() {
             value={author}
             onChange={(e) => saveAuthor(e.target.value)}
             maxLength={24}
-            className="bg-transparent border-b border-[#00ff41]/30 text-[#00ff41] w-32 outline-none focus:border-[#00ff41]/70 placeholder:text-[#00ff41]/20 text-xs pb-0.5"
+            className="bg-transparent border-b border-[#00ff41]/30 text-[#00ff41] w-28 outline-none focus:border-[#00ff41]/70 placeholder:text-[#00ff41]/20 text-xs pb-0.5"
             placeholder="anon"
           />
-          <span className="ml-auto text-[#00ff41]/30 hidden sm:inline">
+          <button
+            type="button"
+            onClick={() => setIsPublic((p) => !p)}
+            className={`ml-2 text-[10px] px-2 py-0.5 border transition-colors ${
+              isPublic
+                ? "border-[#00ff41]/50 text-[#00ff41]/70"
+                : "border-[#00ff41]/20 text-[#00ff41]/30"
+            }`}
+            title={isPublic ? "Broadcasting publicly" : "Internal only"}
+          >
+            {isPublic ? "PUBLIC" : "INTERNAL"}
+          </button>
+          <span className="ml-auto text-[#00ff41]/20 hidden sm:inline">
             iroh · DOT chain · append-only
           </span>
         </div>
